@@ -1,0 +1,1124 @@
+# *********************************************** #
+    #### SET OPTIONS,PATH,LOAD PACKAGES ####
+# *********************************************** #
+
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+perso_computer = T
+Lab_computer = F
+perso_VMH = F
+
+if (perso_computer) {
+  path = "/Users/pierrebarennes/NextCloud/"
+}
+if (Lab_computer) {
+  path = "\\\\mukkuri.transimmunom.org/RepSeq/RS_Analysis/VMH/PostDoc/"
+}
+if (perso_VMH){
+  path = "/Users/vanessamhanna/Nextcloud/"
+}
+
+source(paste0(path, "Pool_indiv/script/Analysis_script_function.R"))
+CORES = 3
+
+# *********************************************** #
+              #### Reading Files ####
+# *********************************************** #
+
+Wok_Dir <- paste0(path, "Pool_indiv/metaTCR_vs_MetaMouse/data/")
+setwd(Wok_Dir)
+metadata <- fread(paste0(path, "/Spleen_pool_indiv/metadata_comp_pool.txt"), header = T)
+unique(metadata$cell_subset)
+file_list <- list.files(path = Wok_Dir, pattern = "tripod")
+filename = file_list
+names(file_list) <- file_list
+file_list <- lapply(file_list, read_files, nt=TRUE)
+file_list <- mapply(cbind, file_list, "filename" = filename, SIMPLIFY = F)
+
+# Pre-Process Files
+file_list <-  mclapply(file_list, prefilter_df, nt=TRUE, mc.cores = CORES)
+# Remove contamination
+file_list <- lapply(file_list, function(x) x <- x %>% filter(!cdr3aa == "CVVGDRGSALGRLHF"))
+
+# Bind all files into one dataframe
+dt = rbindlist(file_list)
+
+# Compute new frequency after de-contamination
+dt <- dt %>%
+  dplyr::group_by(filename, chain) %>%
+  dplyr::mutate(freq_clo = cloneCount / sum(cloneCount) * 100) %>%
+  ungroup()
+
+# Control: frequency by chain and sample == 100
+dt %>%
+  dplyr::group_by(filename, chain) %>%
+  dplyr::summarise(sum(freq_clo))
+
+# Clear unnecessary files
+rm(file_list)
+gc(reset = T)
+
+saveRDS(dt, paste0(path, "Spleen_pool_indiv/metaTCR_vs_MetaMouse/dt_all_nt.rds"))
+
+
+# *********************************************** #
+            #### MetaTCR creation ####
+# *********************************************** #
+# Method 1####
+# Set size equal to pool_indiv sample (by chain and cell_subset)
+size_dt <- dt %>%
+  dplyr::filter(Mice_ID == "pool_indiv") %>%
+  dplyr::group_by(cell_subset, chain) %>%
+  dplyr::summarise(Sequences_number = round(sum(cloneCount))) %>%
+  dplyr::filter(cell_subset %in% c("amTreg", "nTreg")) %>%
+  dplyr::mutate(Nb_for_5 = round(Sequences_number/5)) %>%
+  dplyr::mutate(Nb_for_6 = round(Sequences_number/6))
+
+Mice_size <- dt %>%
+  dplyr::filter(Cell_Sample == "indiv") %>%
+  dplyr::distinct(Mice_ID, cell_subset, chain, nb_sequences)
+
+# Add this information into dt of interest
+Mice_size <- merge(Mice_size, size_dt, by = c("cell_subset", "chain"))
+Mice_size <- ungroup(Mice_size)
+
+Mice_size$keep <- ifelse(Mice_size$cell_subset == "amTreg" & Mice_size$nb_sequences > Mice_size$Nb_for_5, "Yes",
+                              ifelse(Mice_size$cell_subset == "nTreg" & Mice_size$nb_sequences > Mice_size$Nb_for_5, "Yes", "No"))
+
+
+write.table(Mice_size, paste0(path, "Spleen_pool_indiv/metaTCR_vs_MetaMouse/output/summary.txt"), sep = "\t", row.names = F, quote = F, col.names = F)
+
+# Plot this results
+ggplot(Mice_size, aes(x = Mice_ID, y = nb_sequences, fill = Mice_ID)) +
+  geom_bar(stat="identity") +
+  facet_wrap(chain~cell_subset, ncol = 4, scales = "free") +
+  scale_fill_nejm() +
+  theme_classic2() +
+  theme(axis.text.x = element_text(size = 0))
+
+
+### ==> To low. number of sequences for CD4+ and CD8+ T cells
+#Choose to remove these populations
+dt <- dt %>%
+  dplyr::filter(cell_subset %in% c("amTreg", "nTreg"))
+
+dt_indiv = dt %>%
+  dplyr::filter(Cell_Sample == "indiv") %>%
+  dplyr::filter(!(cell_subset == "amTreg" & Mice_ID == "indiv_6"))
+
+dt_metaTCR = data.frame()
+
+for (i in 1:10) {
+  print(i)
+  for (ch in unique(dt_indiv$chain)) {
+    for (cs in unique(dt_indiv$cell_subset)) {
+      for (mID in unique(dt_indiv$Mice_ID)) {
+        
+        if (cs == "amTreg" & mID == "indiv_6") {
+          print(paste0("/ NA /"))
+        }  else {      
+  
+    size_temp <- size_dt %>%
+      dplyr::filter(chain == ch) %>%
+      dplyr::filter(cell_subset == cs)
+    
+    if (cs == "amTreg") {
+      size_temp <- size_temp %>% ungroup() %>%
+        dplyr::select(Nb_for_5) %>% unique() %>% unlist()
+    }
+    
+    if (cs == "nTreg") {
+      size_temp <- size_temp %>% ungroup() %>%
+        dplyr::select(Nb_for_6) %>% unique() %>% unlist()
+    }
+    cat(ch, cs, mID, size_temp, " / NEXT / ", sep = " / ")
+        
+    dt_temp = dt_indiv %>%
+      dplyr::filter(chain == ch) %>%
+      dplyr::filter(cell_subset == cs) %>%
+      dplyr::filter(Mice_ID == mID) %>%
+      dplyr::slice(rep(1:n(), cloneCount)) %>%
+      dplyr::select(-cloneCount) %>%
+      dplyr::mutate(cloneCount = 1) %>%
+      sample_n(size = size_temp) %>% 
+      dplyr::group_by_all() %>%
+      dplyr::summarise(cloneCount = sum(cloneCount)) %>% ungroup()
+    
+    sum(dt_temp$cloneCount) == size_temp
+    
+    dt_temp$iteration = i
+    dt_metaTCR = rbind(dt_metaTCR, dt_temp)
+
+        }
+        }
+    gc(reset = T)
+    }
+  }
+}
+
+dt_metaTCRsave <- dt_metaTCR
+dt_metaTCR$Mice_ID <- paste0("MetaTCR", dt_metaTCR$iteration)
+
+dt_metaTCR_summary <- dt_metaTCR %>%
+  dplyr::group_by(cell_subset, chain, Mice_ID) %>%
+dplyr::summarise(Sequences_number = round(sum(cloneCount)))
+
+  # Plot this results
+ggplot(dt_metaTCR_summary, aes(x = Mice_ID, y = Sequences_number, fill = Mice_ID)) +
+  geom_bar(stat="identity", show.legend = F) +
+  facet_wrap(chain~cell_subset, ncol = 4, scales = "free") +
+  #scale_fill_nejm() +
+  theme_classic2() +
+  theme(axis.text.x = element_text(size = 5, angle = 90, hjust = 1, vjust = 1))
+
+
+dt_metaTCR <- dt_metaTCR %>% select(-iteration)
+
+
+saveRDS(dt_metaTCR, paste0(path, "pool_indiv/metaTCR_vs_MetaMouse/data/metaTCR.rds"))
+
+
+##aggregate counts
+dt_metaTCR_agg<- dt_metaTCR %>% 
+  select(chain,clonotypes,Mice_ID,Clin_Group,sex,cell_subset, cloneCount) %>%
+  group_by(chain,clonotypes,Mice_ID,Clin_Group,sex,cell_subset) %>%
+  summarize(cloneCount=sum(cloneCount)) %>%
+  group_by(chain,Mice_ID,Clin_Group,sex,cell_subset) %>%
+  mutate(freq_clo=cloneCount/sum(cloneCount)*100) %>%
+  mutate(filename=Mice_ID) %>%
+  mutate(Cell_Sample="MetaTCR 1") %>%
+  ungroup()%>%
+  select(filename,cloneCount,chain,clonotypes,freq_clo,Mice_ID,cell_subset,Cell_Sample)
+
+#MH between metaTCR
+MH_res<- list()
+for (i in unique(dt_metaTCR_agg$chain)){
+  for (j in unique(dt_metaTCR_agg$cell_subset)){
+    print(paste(i,j))
+    data <- reshape2::dcast(dt_metaTCR_agg[dt_metaTCR_agg$chain==i & dt_metaTCR_agg$cell_subset==j,], 
+                            clonotypes~Mice_ID, value.var = "cloneCount",fun = sum)
+    rownames(data)<- data$clonotypes
+    data$clonotypes<- NULL
+    MH_res[[i]][[j]] <- Compute_MH(as.matrix(data), method = "ji") 
+    
+  }
+}
+
+MH_res_A= plyr::ldply(MH_res[[1]], data.frame)
+MH_res_A$chain<- "TRA"
+MH_res_B= plyr::ldply(MH_res[[2]], data.frame)
+MH_res_B$chain<- "TRB"
+MH_res_all<- rbind(MH_res_A, MH_res_B)
+
+a<- ggplot(MH_res_all, aes(x=.id, y=value))+
+  geom_boxplot()+
+  facet_grid(~chain)+
+  theme_classic2() +
+  ylab("MH scores")+xlab("")
+
+
+b<- ggplot(MH_res_all, aes(x=.id, y=value))+
+  geom_boxplot()+
+  facet_grid(~chain)+
+  theme_classic2() +
+  ylab("Jaccard scores")+xlab("")
+
+gridExtra::grid.arrange(b, a, nrow = 2)
+
+
+t1<- dt_metaTCR_agg  %>%
+  group_by(cell_subset, chain, filename,Cell_Sample) %>%
+  summarize(count=n()) %>%
+  group_by(cell_subset, chain,Cell_Sample) %>%
+  summarise( 
+    n=n(),
+    mean=mean(count),
+    sd=sd(count)
+  ) %>%
+  mutate( se=sd/sqrt(n))  
+
+# Method 3 ####
+keep <- dt %>%
+     filter(Cell_Sample == "indiv" & grepl("Treg",cell_subset ) ) %>%
+     mutate(count=1) %>%
+     reshape2::dcast(., cell_subset+chain+clonotypes~filename) %>%
+     mutate(sum=rowSums(select_if(., is.numeric),na.rm = TRUE)) %>%
+    filter(sum==1) %>%
+  select(cell_subset, chain, clonotypes)
+
+dt_bis <- dt %>%
+            filter(Cell_Sample == "indiv" & grepl("Treg",cell_subset ) ) %>%
+            merge(., rm, by=c("cell_subset", "chain", "clonotypes")) %>%
+            group_by(filename, cell_subset,chain) %>%
+            mutate(freq_clo=cloneCount/sum(cloneCount)*100) %>%
+            mutate(Cell_Sample="MetaTCR 3") %>%
+            mutate(Mice_ID=filename) %>%
+            mutate(filename="MetaTCR 3") %>%
+            select(filename, cloneCount,chain,clonotypes, freq_clo,Mice_ID, cell_subset, Cell_Sample) 
+
+t3<- dt_bis %>%
+      group_by(cell_subset, chain,Cell_Sample) %>%
+      summarize(count=n()) %>%
+      mutate( 
+        n=1,
+        mean=count,
+        sd=NA,
+        se=NA
+      ) %>%
+      select(-count)
+
+# Method 2 ####
+dt_bis2 <- dt %>%
+          filter(Cell_Sample == "indiv" & grepl("Treg",cell_subset ) ) %>%
+          group_by(cell_subset, chain,  clonotypes) %>%
+          summarize(cloneCount=sum(cloneCount)) %>%
+          group_by( cell_subset,chain) %>%
+          mutate(freq_clo=cloneCount/sum(cloneCount)*100) %>%
+          mutate(Cell_Sample="MetaTCR 2") %>%
+          mutate(Mice_ID="MetaTCR 2") %>%
+          mutate(filename=Mice_ID) %>%
+          select(filename, cloneCount,chain,clonotypes, freq_clo, Mice_ID,cell_subset, Cell_Sample) 
+  
+t2<- dt_bis2 %>%
+      group_by(cell_subset, chain,Cell_Sample) %>%
+      summarize(count=n()) %>%
+      mutate( 
+        n=1,
+        mean=count,
+        sd=NA,
+        se=NA
+      ) %>%
+      select(-count) 
+
+tx<-  dt %>%
+      filter(grepl("Treg",cell_subset ) ) %>%
+      group_by(cell_subset, chain,Mice_ID, Cell_Sample) %>%
+      summarize(count=n()) %>%
+      group_by(cell_subset, chain,Cell_Sample) %>%
+      summarise( 
+        n=n(),
+        mean=mean(count),
+        sd=sd(count)
+      ) %>%
+      mutate( se=sd/sqrt(n))  %>%
+      select(cell_subset,chain,Cell_Sample,n,mean,sd,se) %>%
+   mutate(Cell_Sample=ifelse(Cell_Sample=="indiv", "Mouse","Metamouse"))
+
+
+all_t<-rbind(t1,t2,t3,tx)
+all_t$cell_subset<- gsub('s', '', all_t$cell_subset)
+
+plot<-all_t %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+  mutate(Cell_Sample=factor(Cell_Sample, levels=c( "Mouse","Metamouse","MetaTCR 1","MetaTCR 2","MetaTCR 3"))) %>%
+  mutate(group=ifelse(grepl("MetaTCR", Cell_Sample), "MetaTCR",Cell_Sample)) %>%
+  
+# ggplot() +
+#   geom_bar( aes(x=Cell_Sample, y=mean), stat="identity", fill="forestgreen", alpha=0.5) +
+#   facet_grid(chain~cell_subset)+
+#   geom_errorbar( aes(x=Cell_Sample, ymin=mean-sd, ymax=mean+sd), width=0.4, colour="black", alpha=0.9, linewidth=.5)+
+#   theme_Publication()+
+#   theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position = "right", 
+#         legend.direction = "vertical")+
+#   xlab("")+ylab("Nb of clonotypes")
+
+ggplot(aes(x=Cell_Sample, y=mean, fill=group, pattern=Cell_Sample)) +
+  geom_bar_pattern( stat="identity",
+                    color = "black", 
+                    alpha=.9,
+                    pattern_fill = "black",
+                    pattern_angle = 45,
+                    pattern_density = 0.1,
+                    pattern_spacing = 0.025,
+                    pattern_key_scale_factor = 0.6) + 
+  scale_pattern_manual(values =  c("none", "none", "stripe", "circle", "crosshatch")) +
+  geom_errorbar( aes(x=Cell_Sample, ymin=mean-sd, ymax=mean+sd),
+                 width=0.2, colour="black", alpha=0.9, linewidth=.5)+
+  facet_grid(chain~cell_subset)+
+  scale_fill_manual(values=nejm_color)+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position = "right",
+        legend.direction = "vertical")+
+  xlab("")+ylab("Nb of clonotypes")
+
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Nb_Clono_nt.pdf"), height = 4, width = 5)
+print(plot)
+dev.off()
+
+all_meta<- rbind(dt_bis2,dt_bis, dt_metaTCR_agg)
+saveRDS(all_meta, paste0(path, "Pool_indiv/metaTCR_vs_MetaMouse/data/all_metaTCR_aggr_nt.rds"))
+
+
+#####################################
+###### Shannon diversity  #######
+########################################
+dt_meta<- readRDS(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/data/all_metaTCR_aggr_nt.rds"))
+
+dt_all<- readRDS(paste0(path,"/Pool_indiv/metaTCR_vs_MetaMouse/data/dt_all_nt.rds"))
+dt_all<- dt_all %>% 
+        select(-targetSequences,-TRV,-TRJ,-cdr3aa,-length_cdr3aa,-VJ,-nb_clonotypes,-nb_sequences,
+               -Sample_ID_Std,-cell_number,-sequences_per_clonotypes,-Clin_Group,-sex) %>%
+        mutate(Cell_Sample=ifelse(Cell_Sample=="indiv", "Mouse","Metamouse"))
+
+dt<- rbind(dt_meta ,dt_all)
+
+temp <- dt %>% mutate(group2=paste(filename, Cell_Sample,cell_subset, chain, sep="%"))
+temp<- temp %>%
+        mutate(clonotypes=ifelse(filename=="MetaTCR 3", paste0(clonotypes, Mice_ID), clonotypes))
+temp <- data_modelling(temp, row = "group2", col = "clonotypes", value = "cloneCount")
+
+mod <- vegan::renyi(temp, scales = c(1))
+
+nejm_color <- c("#e18727","#20854e","#bc3c29")
+
+plot<- mod %>% 
+      data.frame() %>%
+      tibble::rownames_to_column() %>%
+      melt() %>%
+      select(-variable) %>%
+      separate(., rowname, c("filename", "Cell_Sample", "cell_subset", "chain"),sep = "%") %>%
+      group_by(cell_subset, chain, Cell_Sample) %>%
+      summarise( 
+        n=n(),
+        mean=mean(value),
+        sd=sd(value)
+      ) %>%
+      mutate( se=sd/sqrt(n))  %>%
+   mutate(group=ifelse(grepl("MetaTCR", Cell_Sample), "MetaTCR",Cell_Sample)) %>%
+   mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+  mutate(group=factor(group, levels=c("Mouse","Metamouse","MetaTCR"))) %>%
+  
+   mutate(Cell_Sample=factor(Cell_Sample, levels=c( "Mouse","Metamouse","MetaTCR 1","MetaTCR 2","MetaTCR 3"))) %>%
+ 
+ ggplot(aes(x=Cell_Sample, y=mean, fill=group, pattern=Cell_Sample)) +
+    geom_bar_pattern( stat="identity",
+                      color = "black", 
+                      alpha=.9,
+                      pattern_fill = "black",
+                      pattern_angle = 45,
+                      pattern_density = 0.1,
+                      pattern_spacing = 0.025,
+                      pattern_key_scale_factor = 0.6) + 
+    scale_pattern_manual(values =  c("none", "none", "stripe", "circle", "crosshatch")) +
+    geom_errorbar( aes(x=Cell_Sample, ymin=mean-sd, ymax=mean+sd),
+                       width=0.2, colour="black", alpha=0.9, linewidth=.5)+
+    facet_grid(chain~cell_subset)+
+    scale_fill_manual(values=nejm_color)+
+    theme_Publication()+
+    theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position = "right",
+           legend.direction = "vertical")+
+    xlab("")+ylab("Shannon")+
+    coord_cartesian(ylim=c(7,12))
+
+ pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Shannon_nt.pdf"), height = 4, width = 5)
+ print(plot)
+ dev.off()
+ 
+ ##########################################
+############ Sharing Analysis  ############
+###########################################
+X_CL = dt
+
+X_CL <- X_CL %>%
+  group_by(filename, chain,cell_subset) %>%
+  arrange(desc(cloneCount)) %>%
+  mutate(clone_ID = row_number()) %>%
+  mutate(quartile = cut(clone_ID, breaks = 4, labels = paste0("Q", 1:4)))
+
+summary_quartile <- X_CL %>%
+  group_by(filename, chain, Cell_Sample, Clin_Group, cell_subset, quartile) %>%
+  summarise(n_distinct(clonotypes))
+
+X_CL2 <- X_CL %>%
+           # filter(filename!="tripod-64-1932_R1.txt") %>%
+           mutate(group2=paste(filename, Cell_Sample,cell_subset, chain, sep="%")) %>%
+           named_group_split(chain , cell_subset,sep="_") 
+X_CL2 <- lapply(X_CL2, dkast, gene = "clonotypes", value = "cloneCount")
+
+#boxplot
+MH_res2 <- mclapply(X_CL2, Compute_MH, method = "mh", out="df", mc.cores = 4) ## method mh or ji
+
+MH_res3<-rbindlist(MH_res2, idcol = "group")
+
+MH_res3 <- MH_res3 %>%
+  separate(., Var1, into = c( "filename1", "Cell_Sample1", "cell_subset1","chain1"), sep = "%") %>%
+  separate(., Var2, into = c( "filename2","Cell_Sample2", "cell_subset2","chain2"), sep = "%") %>%
+  separate(., group, into = c("chain", "cell_subset"), sep = "_")
+
+rm<- c("MetaTCR10","MetaTCR2","MetaTCR3","MetaTCR4","MetaTCR5","MetaTCR6","MetaTCR7","MetaTCR8", "MetaTCR9" )
+
+MH_res4 = MH_res3 %>%
+  filter(!grepl(paste0(rm, collapse="|"), filename1)) %>%
+  filter(!grepl(paste0(rm, collapse="|"), filename2)) %>%
+  filter(Cell_Sample1 != Cell_Sample2) %>% #### If we don't want to compare indiv sample with pool samples
+  mutate(keep=ifelse(Cell_Sample1=="Mouse" | Cell_Sample2=="Mouse", "keep","no" )) %>%
+  filter(keep=="keep") %>%
+  mutate(group=ifelse(Cell_Sample1=="Mouse" , Cell_Sample2, Cell_Sample1)) %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+  mutate(group2=ifelse(grepl("MetaTCR", group), "MetaTCR",group)) %>%
+  select(chain, cell_subset, value, group, group2) %>%
+  distinct()
+
+
+## Graph 1
+stat.test <-
+  corr_all2 %>%
+  group_by(chain, cell_subset) %>%
+  rstatix::wilcox_test(value ~ group) %>%
+  rstatix::adjust_pvalue(method = "holm") %>%
+  rstatix::add_significance("p.adj") %>%
+  rstatix::add_y_position()
+
+plot<- MH_res4 %>%
+  ggplot(.,  aes(x=group, y=value)) +
+  geom_boxplot_pattern( aes(fill=group2, pattern=group),
+                        outlier.shape = NA,
+                        linewidth=.3,
+                        color = "black", 
+                        alpha=.9,
+                        pattern_fill = "black",
+                        pattern_angle = 45,
+                        pattern_density = 0.1,
+                        pattern_spacing = 0.025,
+                        pattern_key_scale_factor = 0.6) + 
+  scale_pattern_manual(values =  c("none", "stripe", "circle", "crosshatch"))+
+  geom_jitter(fill="black",shape=21,size=1,width=.2,alpha=.5, color="black")+
+  facet_grid(chain~cell_subset) +
+  scale_fill_manual(values= c("#20854e","#bc3c29"))+
+  stat_pvalue_manual(data = stat.test, label = "p.adj.signif", tip.length = 0.01 ,  hide.ns = TRUE) +
+  theme_Publication()+
+  theme(legend.position = "right", legend.direction = "vertical",
+        axis.text.x = element_text(size=8, angle=90, hjust=1, vjust=0.5))+
+  xlab("")+
+  scale_y_continuous(limits=c(0,1))+
+  ylab("Morisita-Horn")
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/MH_stat.pdf"), height = 4, width = 5)
+print(plot)
+dev.off()
+
+
+##heatmap
+MH_res2 <- mclapply(X_CL2, Compute_MH, method = "ji", out="matrix", mc.cores = 4) ## method mh or ji
+
+ht<- list()
+for (i in 1:length(MH_res2)){
+  print(i)
+  mat<- MH_res2[[i]]
+  
+  #clustering
+  meta<- colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)
+  pch=factor(meta[1:12], levels=c("MetaTCR 1","MetaTCR 2","MetaTCR 3"),
+                            labels=c(1,2,3))
+  
+  val=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+       str_split(pattern=" ") %>% sapply(., "[", 1)
+  col<- c("#e18727","#20854e","#bc3c29")
+  
+  names(col)<- c(  "Mouse"  ,   "Metamouse", "MetaTCR" )
+  vec<- factor(val, levels=c( "Mouse", "Metamouse",   "MetaTCR" ), labels=col)
+  names(vec)<- val
+  
+  col2<- c("black","gray")
+  names(col2)<- c("TRA","TRB")
+  
+  col3<- c("#72BF5B", "#7876b1")
+  names(col3)<- c(  "nTreg" ,"amTreg" )
+  
+  
+  hc=HeatmapAnnotation(
+    chain= colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 4),
+    cell_subset=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 3),
+    condition=anno_simple(colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+                            str_split(pattern=" ") %>% sapply(., "[", 1) ,
+                          col=vec,
+                          pch=pch,
+                          border=T,
+                          simple_anno_size = unit(.35, "cm")),
+    col=list(chain=col2,
+             cell_subset=col3),
+    border=T,
+    simple_anno_size = unit(.35, "cm")
+    )
+  
+  hr=rowAnnotation(
+    chain= colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 4),
+    cell_subset=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 3),
+    condition=anno_simple(colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+                            str_split(pattern=" ") %>% sapply(., "[", 1) ,
+                          col=vec,
+                          pch=pch,
+                          border=T,
+                          simple_anno_size = unit(.35, "cm")),
+    col=list(chain=col2,
+             cell_subset=col3),
+    border=T,
+    simple_anno_size = unit(.35, "cm")
+  )
+  
+  ht[[i]]<- ComplexHeatmap::Heatmap(mat,
+                                    cluster_columns = TRUE,
+                                    show_row_names = FALSE,
+                                    show_column_names = T,
+                                    clustering_method_columns = "ward.D2",
+                                    clustering_method_rows  = "ward.D2",
+                                    col= viridis::cividis(n = 50),
+                                    top_annotation = hc,
+                                    left_annotation = hr)
+  
+  lgd_cond=Legend(labels=c( "MetaTCR" , "Mouse" , "Metamouse"), title="condition",
+                  legend_gp=gpar(fill=col))
+  lgd_cond_g<- Legend(pch=1:3,
+                      type="points",
+                     labels= c("MetaTCR 1","MetaTCR 2","MetaTCR 3"),
+                     title="MetaTCR")
+  
+  pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/MH_",names(MH_res2)[i],".pdf"), height = 5, width = 6)
+  print(draw(ht[[i]], annotation_legend_list=list(lgd_cond,lgd_cond_g)))
+  dev.off()
+  
+}
+
+
+# correlation of variables 
+
+X_CL_Q1 <- X_CL %>% filter(quartile == "Q1") #%>%  filter(filename!="tripod-64-1932_R1.txt") 
+X_CL_Q1 <- X_CL_Q1 %>% 
+            mutate(group2=paste(filename, Cell_Sample,cell_subset, chain, sep="%")) %>%
+            named_group_split(chain,cell_subset,  sep="%") 
+X_CL_Q1 <- lapply(X_CL_Q1, dkast, gene = "clonotypes", value = "freq_clo")
+
+data_cor <- lapply(X_CL_Q1, function(x) x <- cor(x))
+
+p1<-ggplot(as.data.frame(X_CL_Q1[["TRB%nTreg"]]), aes(x=`tripod-64-1914_R1.txt%Mouse%nTreg%TRB`, y=`tripod-64-1958_R1.txt%Metamouse%nTreg%TRB`))+
+  geom_point(shape=21)+
+  stat_cor(method = "pearson", label.x = 0.02, label.y = 0.03)+
+  theme_Publication()+
+  ylab("Metamouse")+xlab("Mouse")+
+  ggtitle("nTreg TRB")
+
+
+p2<-ggplot(as.data.frame(X_CL_Q1[["TRB%amTreg"]]), aes(x=`tripod-64-1916_R1.txt%Mouse%amTreg%TRB`, y=`tripod-64-1956_R1.txt%Metamouse%amTreg%TRB`))+
+  geom_point(shape=21)+
+  stat_cor(method = "pearson", label.x = 0.35, label.y = 0.1)+
+  theme_Publication()+
+  ylab("Metamouse")+xlab("Mouse")+
+  ggtitle("amTreg TRB")
+
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/scatter_plot.pdf"), height = 6.5, width = 5)
+print(gridExtra::grid.arrange(p1,p2))
+dev.off()
+
+#heatmap####
+ht<- list()
+for (i in 1:length(data_cor)){
+  print(i)
+  mat<- data_cor[[i]]
+  
+  #clustering
+  meta<- colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)
+  pch=factor(meta[1:12], levels=c("MetaTCR 1","MetaTCR 2","MetaTCR 3"),
+             labels=c(1,2,3))
+  
+  val=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+    str_split(pattern=" ") %>% sapply(., "[", 1)
+  col<- c("#e18727","#20854e","#bc3c29")
+  
+  names(col)<- c(  "Mouse"  ,   "Metamouse", "MetaTCR" )
+  vec<- factor(val, levels=c( "Mouse", "Metamouse",   "MetaTCR" ), labels=col)
+  names(vec)<- val
+  
+  col2<- c("black","gray")
+  names(col2)<- c("TRA","TRB")
+  
+  col3<- c("#72BF5B", "#7876b1")
+  names(col3)<- c(  "nTreg" ,"amTreg" )
+  
+  
+  hc=HeatmapAnnotation(
+    chain= colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 4),
+    cell_subset=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 3),
+    condition=anno_simple(colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+                            str_split(pattern=" ") %>% sapply(., "[", 1) ,
+                          col=vec,
+                          pch=pch,
+                          border=T,
+                          simple_anno_size = unit(.35, "cm")),
+    col=list(chain=col2,
+             cell_subset=col3),
+    border=T,
+    simple_anno_size = unit(.35, "cm")
+  )
+  
+  hr=rowAnnotation(
+    chain= colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 4),
+    cell_subset=colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 3),
+    condition=anno_simple(colnames(mat) %>% str_split(pattern="%") %>% sapply(., "[", 2)  %>%
+                            str_split(pattern=" ") %>% sapply(., "[", 1) ,
+                          col=vec,
+                          pch=pch,
+                          border=T,
+                          simple_anno_size = unit(.35, "cm")),
+    col=list(chain=col2,
+             cell_subset=col3),
+    border=T,
+    simple_anno_size = unit(.35, "cm")
+  )
+  
+  ht[[i]]<- ComplexHeatmap::Heatmap(mat,
+                                    cluster_columns = TRUE,
+                                    show_row_names = FALSE,
+                                    show_column_names =FALSE,
+                                    # column_names_gp = grid::gpar(fontsize = 8),
+                                    clustering_method_columns = "ward.D2",
+                                    clustering_method_rows  = "ward.D2",
+                                    col= viridis::cividis(n = 50),
+                                    top_annotation = hc,
+                                    left_annotation = hr)
+  
+  lgd_cond=Legend(labels=c( "Mouse" , "Metamouse","MetaTCR" ), title="condition",
+                  legend_gp=gpar(fill=col))
+  lgd_cond_g<- Legend(pch=1:3,
+                      type="points",
+                      labels= c("MetaTCR 1","MetaTCR 2","MetaTCR 3"),
+                      title="MetaTCR")
+  
+  pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Corr_",names(MH_res2)[i],".pdf"), height = 5, width = 6)
+  print(draw(ht[[i]], annotation_legend_list=list(lgd_cond,lgd_cond_g)))
+  dev.off()
+  
+}
+
+
+##boxplot####
+corr_all <- lapply(data_cor,   melt)
+corr_all<-rbindlist(corr_all, idcol = "group")
+
+corr_all <- corr_all %>%
+  separate(., Var1, into = c( "filename1", "Cell_Sample1", "cell_subset1","chain1"), sep = "%") %>%
+  separate(., Var2, into = c( "filename2","Cell_Sample2", "cell_subset2","chain2"), sep = "%") %>%
+  separate(., group, into = c("chain", "cell_subset"), sep = "%")
+
+rm<- c("MetaTCR10","MetaTCR2","MetaTCR3","MetaTCR4","MetaTCR5","MetaTCR6","MetaTCR7","MetaTCR8", "MetaTCR9" )
+corr_all2 = corr_all %>%
+  filter(!grepl(paste0(rm, collapse="|"), filename1)) %>%
+  filter(!grepl(paste0(rm, collapse="|"), filename2)) %>%
+  filter(Cell_Sample1 != Cell_Sample2) %>% #### If we don't want to compare indiv sample with pool samples
+  mutate(keep=ifelse(Cell_Sample1=="Mouse" | Cell_Sample2=="Mouse", "keep","no" )) %>%
+  filter(keep=="keep") %>%
+  mutate(group=ifelse(Cell_Sample1=="Mouse" , Cell_Sample2, Cell_Sample1)) %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+  mutate(group2=ifelse(grepl("MetaTCR", group), "MetaTCR",group)) %>%
+  select(chain, cell_subset, value, group, group2) %>%
+  distinct()
+  
+
+## Graph 1
+stat.test <-corr_all2 %>%
+  group_by(chain, cell_subset) %>%
+  rstatix::wilcox_test(value ~ group) %>%
+  rstatix::adjust_pvalue(method = "holm") %>%
+  rstatix::add_significance("p.adj") %>%
+  rstatix::add_y_position()
+
+
+plot<-corr_all2 %>%
+  ggplot(.,  aes(x=group, y=value)) +
+  geom_boxplot_pattern( aes(fill=group2, pattern=group),
+                        outlier.shape = NA,
+                    color = "black", 
+                    linewidth=.3,
+                    alpha=.9,
+                    pattern_fill = "black",
+                    pattern_angle = 45,
+                    pattern_density = 0.1,
+                    pattern_spacing = 0.025,
+                    pattern_key_scale_factor = 0.6) + 
+  scale_pattern_manual(values =  c("none", "stripe", "circle", "crosshatch"))+
+  geom_jitter(fill="black",shape=21,size=1,width=.2,alpha=.5, color="black")+
+  facet_grid(chain~cell_subset) +
+  scale_fill_manual(values= c("#20854e","#bc3c29"))+
+  stat_pvalue_manual(data = stat.test, label = "p.adj.signif", tip.length = 0.01 , hide.ns = TRUE) +
+  theme_Publication()+
+  theme(legend.position = "right", legend.direction = "vertical",
+        axis.text.x = element_text(size=8, angle=90, hjust=1, vjust=0.5))+
+  xlab("")
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Corr_stat.pdf"), height = 4, width = 5)
+print(plot)
+dev.off()
+
+
+############################################################
+############ Frequencies distribution Analysis  ############
+############################################################
+X_CL <- dt
+
+X_CL$freq_bin<-cut(X_CL$freq_clo, c(0.000001, 0.00001, 0.0001,0.001,0.01, 0.1,1, 100), include.lowest=T)
+
+X_CL <- X_CL %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+  mutate(Cell_Sample=factor(Cell_Sample, levels=c("Mouse","Metamouse","Metarepertoire"))) %>%
+  filter(Mice_ID!="indiv_6") %>%
+  group_by(Mice_ID, chain, cell_subset, Cell_Sample, freq_bin) %>%
+  #summarise(count = n()) %>%
+  summarise(count = sum(freq_clo)) %>%
+  ungroup() %>%
+  group_by(Mice_ID, chain, cell_subset, Cell_Sample) %>%
+  mutate(percentage = count/sum(count))
+
+temp50 <- X_CL %>% group_by(Mice_ID, chain, cell_subset, Cell_Sample) %>%
+  complete(freq_bin, fill = list(count = 0, percentage = 0))
+
+temp50 %>%
+mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+ mutate(Cell_Sample=factor(Cell_Sample, levels=c("Mouse","Metamouse","Metarepertoire"))) %>%
+  filter(Mice_ID!="indiv_6") %>%
+ggplot(., aes(fill=as.factor(freq_bin), y=percentage, x=Mice_ID)) + 
+  geom_bar(position="fill", stat="identity") +
+  facet_grid(chain~cell_subset+Cell_Sample, scales = "free") +
+  labs(x = "Samples", y = "Cumulative frequency") +
+  scale_fill_brewer(palette="RdYlBu", direction=-1)+
+  scale_color_manual(values = nejm_color)+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5, size = 6))
+
+
+X_occ_2 <- Rmisc::summarySE(temp50, measurevar = "count", groupvars = c( "cell_subset", "chain", "Cell_Sample", "freq_bin"))
+# X_occ_2$Cell_Sample <- factor(X_occ_2$Cell_Sample, levels = c("indiv", 'pool'))
+# X_occ_2$cell_subset <- factor(X_occ_2$cell_subset, levels = c("CD8+", 'CD4+', 'nTreg', "amTreg"))
+# 
+
+stat_res = data.frame()
+for(fb in unique(temp50$freq_bin)) {
+  temp1 <- temp50 %>% filter(freq_bin == fb)
+  temp1 <- compare_means(count~Cell_Sample, data = temp1,
+                         group.by = c("freq_bin", "chain", "cell_subset")) %>%
+    rstatix::adjust_pvalue(method = "holm") %>%
+    rstatix::add_significance("p.adj")
+  stat_res <- rbind(stat_res, temp1)
+}
+
+X_occ_2 %>%
+  filter(freq_bin!="[1e-06,1e-05]") %>%
+ggplot2::ggplot(., aes(x = freq_bin, y = ifelse(is.na(count), 0, count), fill = Cell_Sample)) +
+  facet_grid(chain ~ cell_subset, scales = "fixed", space = "fixed")+
+  geom_bar(stat="identity", color = "black", width=0.8, position = position_dodge(preserve = "single"), show.legend = T) +
+  geom_errorbar(aes(ymin=count-sd, ymax=count+sd), width=.2,
+                position=position_dodge(.9))+
+  #geom_density(stat = "identity", alpha = 0.3, aes(group = Cell_Sample, color = Cell_Sample), fill = NA)+
+  scale_color_manual(values = nejm_color)+
+  scale_fill_manual(values = nejm_color)+
+  scale_y_continuous("Cumulative frequency", expand = expansion(mult = c(0, .15))) + 
+  theme_Publication() +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
+
+
+#########
+#########
+X_CL <- dt_filtered %>% select(filename, freq_clo, chain, cell_subset, Cell_Sample, group2, Mice_ID)
+
+X_CL <- X_CL %>%
+  group_by(filename, chain) %>% 
+  arrange(filename, freq_clo, chain) %>%
+  mutate(rank = rank(-freq_clo, ties.method =  "first"))
+
+X_CL$Cell_Sample <- factor(X_CL$Cell_Sample, levels = c("indiv", 'pool'))
+X_CL$cell_subset <- factor(X_CL$cell_subset, levels = c("CD8+", 'CD4+', 'nTreg', "amTreg"))
+
+ggplot(X_CL, aes(x = rank, y = freq_clo , color= Cell_Sample)) + 
+  geom_point() +
+  facet_grid(chain~cell_subset, scales = "free") +
+  labs(x = "Samples", y = "Cumulative frequency") +
+  scale_color_manual(values = nejm_color)+
+  scale_y_log10()+
+  scale_x_log10()+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5, size = 6))
+
+
+top_cl <- X_CL %>% group_by(Mice_ID) %>%
+  filter(rank %in% c(1))
+
+ggplot(X_CL #%>% filter(cell_subset == "nTreg")
+       , aes(x = Mice_ID, y = freq_clo , color= Cell_Sample)) + 
+  geom_violin() +
+  geom_point(data = top_cl, aes(x = Mice_ID, y = freq_clo)) +
+  facet_grid(chain~cell_subset, scales = "free") +
+  labs(x = "Samples", y = "Cumulative frequency") +
+  scale_color_manual(values = nejm_color)+
+  scale_y_log10()+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5, size = 6))
+
+
+##########
+##########
+
+
+##########################################
+############ Sharing Analysis  OvC ############
+###########################################
+X_CL = dt
+
+X_CL <- X_CL %>%
+  group_by(filename, chain,cell_subset) %>%
+  mutate(clone_ID = row_number()) %>%
+  mutate(quartile = cut(clone_ID, breaks = 4, labels = paste0("Q", 1:4)))
+
+X_CL2 <- X_CL %>%
+  # filter(filename!="tripod-64-1932_R1.txt") %>%
+  mutate(group2=paste(filename, Cell_Sample,cell_subset, chain, sep="%")) %>%
+  named_group_split(chain , cell_subset,sep="_") 
+
+combs<- lapply(X_CL2, function(x) expand_grid(unique(x$group2),unique(x$group2) ))
+
+OvC<- list()
+for (i in 1:length(X_CL2)){
+  print(i)
+  df<- X_CL2[[i]]
+  combsi=combs[[i]]
+  
+  temp<- list()
+  for (k in 1:nrow(combsi)){
+    print(k)
+    xA<- df %>% 
+        filter(group2==pull(combsi[k,1])) %>%
+        select(clonotypes, group2) %>%
+        distinct() %>%
+        pull(clonotypes)
+    
+    xB<- df %>% 
+      filter(group2==pull(combsi[k,2])) %>%
+      select(clonotypes, group2) %>%
+      distinct() %>%
+      pull(clonotypes)
+    
+    value=ribiosUtils::overlapCoefficient(xA, xB, checkUniqueNonNA = TRUE)
+    
+    temp[[k]]<- data.frame("group1"=combsi[k,1], "group2"=combsi[k,2], "OvC"=value)
+  }
+  OvC[[i]]<- rbindlist(temp)
+}
+names(OvC)<- names(X_CL2)
+OvC_all<- rbindlist(OvC, idcol =TRUE)
+
+OvC_all <- OvC_all %>%
+  separate(., `unique.x.group2....1`, into = c( "filename1", "Cell_Sample1", "cell_subset1","chain1"), sep = "%") %>%
+  separate(., `unique.x.group2....2`, into = c( "filename2","Cell_Sample2", "cell_subset2","chain2"), sep = "%") %>%
+  separate(., `.id`, into = c("chain", "cell_subset"), sep = "_")
+
+rm<- c("MetaTCR10","MetaTCR2","MetaTCR3","MetaTCR4","MetaTCR5","MetaTCR6","MetaTCR7","MetaTCR8", "MetaTCR9" )
+OvC_all2 = OvC_all %>%
+        filter(!grepl(paste0(rm, collapse="|"), filename1)) %>%
+        filter(!grepl(paste0(rm, collapse="|"), filename2)) %>%
+        filter(Cell_Sample1 != Cell_Sample2) %>% #### If we don't want to compare indiv sample with pool samples
+        mutate(keep=ifelse(Cell_Sample1=="Mouse" | Cell_Sample2=="Mouse", "keep","no" )) %>%
+        filter(keep=="keep") %>%
+        mutate(group=ifelse(Cell_Sample1=="Mouse" , Cell_Sample2, Cell_Sample1)) %>%
+        mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) %>%
+        mutate(group2=ifelse(grepl("MetaTCR", group), "MetaTCR",group)) %>%
+        select(chain, cell_subset, OvC, group, group2) %>%
+        distinct()
+
+
+## Graph 1
+stat.test <-corr_all2 %>%
+  group_by(chain, cell_subset) %>%
+  rstatix::wilcox_test(value ~ group) %>%
+  rstatix::adjust_pvalue(method = "holm") %>%
+  rstatix::add_significance("p.adj") %>%
+  rstatix::add_y_position()
+
+
+plot<-OvC_all2 %>%
+  ggplot(.,  aes(x=group, y=OvC)) +
+  geom_boxplot_pattern( aes(fill=group2, pattern=group),
+                        outlier.shape = NA,
+                        color = "black", 
+                        linewidth=.3,
+                        alpha=.9,
+                        pattern_fill = "black",
+                        pattern_angle = 45,
+                        pattern_density = 0.1,
+                        pattern_spacing = 0.025,
+                        pattern_key_scale_factor = 0.6) + 
+  scale_pattern_manual(values =  c("none", "stripe", "circle", "crosshatch"))+
+  geom_jitter(fill="black",shape=21,size=1,width=.2,alpha=.5, color="black")+
+  facet_grid(chain~cell_subset) +
+  scale_fill_manual(values= c("#20854e","#bc3c29"))+
+  stat_pvalue_manual(data = stat.test, label = "p.adj.signif", tip.length = 0.01 , hide.ns = TRUE) +
+  theme_Publication()+
+  theme(legend.position = "right", legend.direction = "vertical",
+        axis.text.x = element_text(size=8, angle=90, hjust=1, vjust=0.5))+
+  xlab("")
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Corr_stat.pdf"), height = 4, width = 5)
+print(plot)
+dev.off()
+
+
+
+##########################################
+############ Number of singletons ############
+###########################################
+
+###### Reading Files #######
+
+Wok_Dir <- paste0(path, "/Pool_indiv/data")
+setwd(Wok_Dir)
+metadata <- fread(paste0(path, "/Pool_indiv/metadata_comp_pool.txt"), header = T)
+metadata<- metadata%>% filter(grepl("Treg",cell_subset)) %>% filter(Cell_Sample=="pool")
+
+file_list <- list.files(path = Wok_Dir, pattern = "tripod")
+file_list<- file_list[file_list %in% metadata$filename]
+filename = file_list
+names(file_list) <- file_list
+file_list <- lapply(file_list, read_files, nt=TRUE)
+
+file_list <- mapply(cbind, file_list, "filename" = filename, SIMPLIFY = F)
+
+# Pre-Process Files
+file_list <-  mclapply(file_list, prefilter_df, nt=TRUE, mc.cores = CORES)
+
+file_list <- lapply(file_list, function(x) x <- x %>% filter(!clonotypes == "TRAV11 CVVGDRGSALGRLHF TRAJ18"))
+
+sum(file_list[[1]]$freq_clo)
+dt = rbindlist(file_list)
+
+dt <- dt %>%
+  dplyr::group_by(filename, chain) %>%
+  dplyr::mutate(freq_clo = cloneCount / sum(cloneCount) * 100) %>%
+  ungroup()
+
+dt %>%
+  dplyr::group_by(filename, chain) %>%
+  dplyr::summarise(sum(freq_clo))
+
+rm(file_list)
+gc(reset = T)
+
+saveRDS(dt, paste0(path,"/Pool_indiv/metaTCR_vs_MetaMouse/data/dt_paper_nt.rds"))
+
+
+#analysis
+X_CL <- dt %>%
+  filter(Cell_Sample=="Metamouse" & grepl("Treg",cell_subset)) %>%
+  group_by(chain, cloneCount,cell_subset) %>%
+  summarize(count=n()) %>%
+  group_by(chain,cell_subset) %>%
+  mutate(percent=(count/sum(count))*100) %>%
+  reshape2::dcast(., cell_subset+cloneCount~chain)  %>%
+  replace(is.na(.),0)%>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) 
+
+p1<-ggplot(X_CL, aes(x=TRA,y= TRB)) +
+  geom_abline(linewidth=.3)+
+  geom_point(shape=21, fill="white")+
+   theme_Publication()+
+  theme(plot.title=element_text(size=8),
+        axis.title=element_text(size=7),text=element_text(size=7),
+        plot.subtitle = element_text(face="bold"))+
+  facet_grid(~cell_subset)+
+  scale_y_continuous(limits=c(0,32))+
+  scale_x_continuous(limits=c(0,32))+
+  labs(subtitle = "Metamouse (pool_indiv)")
+
+
+dt_bis<- readRDS(paste0(path,"/Pool_indiv/metaTCR_vs_MetaMouse/data/dt_paper_nt.rds"))
+X_CL_bis<- dt_bis %>%
+            filter(Mice_ID=="pool_1" & grepl("Treg",cell_subset)) %>%
+            group_by(chain, cloneCount,cell_subset) %>%
+            summarize(count=n()) %>%
+            group_by(chain,cell_subset) %>%
+            mutate(percent=(count/sum(count))*100) %>%
+            reshape2::dcast(., cell_subset+cloneCount~chain) %>%
+            replace(is.na(.),0) %>%
+            mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) 
+
+  
+p2<-ggplot(X_CL_bis, aes(x=TRA,y= TRB)) +
+  geom_abline(linewidth=.3)+
+  geom_point(shape=21, fill="white")+
+  facet_grid(~cell_subset)+
+  theme_Publication()+
+  theme(plot.title=element_text(size=8),
+        axis.title=element_text(size=7),text=element_text(size=7),
+        plot.subtitle = element_text(face="bold"))+
+  scale_y_continuous(limits=c(0,32))+
+  scale_x_continuous(limits=c(0,32))+
+  labs(subtitle = "Metamouse (pool_1)")
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/singletons.pdf"), height = 5, width = 5)
+print(gridExtra::grid.arrange(p1,p2))
+dev.off()
+
+
+#
+
+test<- dt %>%
+  filter(!grepl("MetaTCR",Mice_ID)) %>%
+  filter(!grepl("tripod",Mice_ID)) %>%
+  select(clonotypes, chain, cell_subset, Cell_Sample, filename) %>%
+  distinct() %>%
+  group_by(chain, cell_subset, Cell_Sample,filename) %>%
+  summarize(count=n())  %>%
+  
+  group_by(cell_subset, chain,Cell_Sample) %>%
+  summarise( 
+    n=n(),
+    mean=mean(count),
+    sd=sd(count)
+  ) %>%
+  mutate( se=sd/sqrt(n))  %>%
+  select(cell_subset,chain,Cell_Sample,n,mean,sd,se) %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) 
+
+
+test_b<- dt_bis %>%
+  filter(grepl("pool",Mice_ID)) %>%
+  select(clonotypes, chain, cell_subset,Mice_ID, filename) %>%
+  distinct() %>%
+  group_by(chain, cell_subset, Mice_ID,filename) %>%
+  summarize(count=n())  %>%
+  
+  group_by(cell_subset, chain) %>%
+  summarise( 
+    n=n(),
+    mean=mean(count),
+    sd=sd(count)
+  ) %>%
+  mutate( se=sd/sqrt(n))  %>%
+  mutate(Cell_Sample="Metamouse_other") %>%
+  select(cell_subset,chain,Cell_Sample,n,mean,sd,se) %>%
+  mutate(cell_subset=factor(cell_subset, levels=c("nTreg","amTreg"))) 
+
+
+test_tot<- rbind(test_b, test)
+test_tot<- test_tot %>%  mutate(Cell_Sample=factor(Cell_Sample, levels=c( "Mouse","Metamouse","Metamouse_other"))) 
+
+data=test_tot %>%
+  group_by(chain, cell_subset) %>%
+  mutate(group2=round(max(mean)/min(mean),2)) %>%
+  filter(Cell_Sample!="Mouse")
+
+p2<- ggplot(test_tot, aes(x=Cell_Sample, y=mean)) +
+  geom_bar( stat="identity") + 
+  geom_errorbar( aes(x=Cell_Sample, ymin=mean-sd, ymax=mean+sd),
+                 width=0.2, colour="black", alpha=0.9, linewidth=.5)+
+  # geom_line(data=test %>% filter(group=="1"), aes(group=group), colour="red")+
+  facet_grid(chain~cell_subset)+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5), legend.position = "right",
+        legend.direction = "vertical")+
+  xlab("")+ylab("Nb of clonotypes")#+
+  # geom_text(data = data, aes( y = mean+10000, label = paste0("x",group2)), colour="red") 
+
+pdf(paste0(path, "/Pool_indiv/metaTCR_vs_MetaMouse/output/Nb_Clono_nt_ratio.pdf"), height = 5, width = 5)
+print(p2)
+dev.off()
+
