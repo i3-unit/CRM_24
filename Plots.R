@@ -2,8 +2,6 @@ source("./Functions.R")
 CORES = 4
 
 
-dt_filtered=readRDS("/Users/vanessamhanna/Nextcloud/Pool_indiv/dt_filtered.rds")
-
 # Create the summary table
 summary <- dt_filtered %>%
   dplyr::group_by(filename, Mice_ID, chain, cell_subset, Cell_Sample, cell_number) %>%
@@ -458,10 +456,10 @@ cdr3aa_alpha= as.data.frame(unique(X_CL_Q1$cdr3aa[X_CL_Q1$chain=="TRA"]))
 
 # run olga-compute_pgen --mouseTRB -i /mnt/mukkuri/RepSeq/RS_Analysis/VMH/pool_indiv/review/unique_cdr3aa_beta.tsv -o /mnt/mukkuri/RepSeq/RS_Analysis/VMH/pool_indiv/review/pgen_unique_cdr3aa_beta.tsv
 
-file_list <- list.files(path = "./files/", pattern = "pgen", include.dirs = T)
+# file_list <- list.files(path = "./files/", pattern = "pgen", include.dirs = T)
 pgen_filename = file_list
 names(file_list) <- file_list
-file_list <- lapply(paste0( "./files/", file_list), fread)
+# file_list <- lapply(paste0( "./files/", file_list), fread)
 file_list <- mapply(cbind, file_list, "filename" = pgen_filename, SIMPLIFY = F)
 pgen_dt = rbindlist(file_list)
 colnames(pgen_dt)<- c("cdr3aa","pgen","filename")
@@ -700,8 +698,8 @@ all_t %>%
 
 
 ##b
-dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
-dt_all<- readRDS("./files/dt_all_nt.rds")
+# dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
+# dt_all<- readRDS("./files/dt_all_nt.rds")
 
 
 dt_all<- dt_all %>% 
@@ -758,8 +756,8 @@ coord_cartesian(ylim=c(7,12))
 
 #Fig S4
 ##a
-dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
-dt_all<- readRDS("./files/dt_all_nt.rds")
+# dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
+# dt_all<- readRDS("./files/dt_all_nt.rds")
 dt_all<- dt_all %>% 
   dplyr::select(-targetSequences,-TRV,-TRJ,-cdr3aa,-length_cdr3aa,-VJ,-nb_clonotypes,-nb_sequences,
                 -Sample_ID_Std,-cell_number,-sequences_per_clonotypes,-Clin_Group,-sex) %>%
@@ -954,11 +952,11 @@ for(var_chain in c("TRA", "TRB")) {
 }
 
 ## b
-file_list <- list.files(path = "./files/", pattern = "_CDR3aa_info_", include.dirs = T)
+# file_list <- list.files(path = "./files/", pattern = "_CDR3aa_info_", include.dirs = T)
 
 networks_filename = file_list
 names(file_list) <- file_list
-file_list <- lapply(paste0("./files/", file_list), fread)
+# file_list <- lapply(paste0("./files/", file_list), fread)
 
 file_list <- mapply(cbind, file_list, "filename" = networks_filename, SIMPLIFY = F)
 networks_dt = rbindlist(file_list)
