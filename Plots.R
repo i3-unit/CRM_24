@@ -1,20 +1,91 @@
 source("./Functions.R")
 CORES = 4
 
+#Figure S1 ####
 
+all_data<- read.table("/Users/vanessamhanna/Nextcloud/Pool_indiv/Cell_Reports_Methods/revision/mukkuri/all_data.csv", 
+           sep = ";", header=T, check.names = F )
+all_data<- all_data %>% mutate(cell_subset=factor(cell_subset, levels=c("CD8","Teff", "nTregs","amTregs")))
+#a
+ggplot(all_data, aes(x =cell_number, y =RNA))+
+  geom_point(aes(fill=`Per base sequence quality`, shape=organ), color="black")+
+  facet_grid(~ cell_subset, scales="free")+
+  smplot2::sm_statCorr(color = 'black', corr_method = 'spearman', linetype = 'dashed',text_size = 3)+
+  scale_shape_manual(values=c(21,22,24))+
+  theme_Publication()+
+  ggplot2::theme( axis.text = element_text(size=7))+
+  scale_x_continuous(labels = function(x) format(x, scientific =TRUE))+
+  labs(title = "Cell number vs. [RNA]")
+
+#b
+ggplot(all_data_m[grepl("clonotype_", all_data_m$variable) ,], 
+       aes(x=organ, y=as.numeric(value)))+
+  geom_boxplot(outlier.shape = NA)+
+  geom_jitter(aes(fill=`Per base sequence quality`),width=0.2,shape=21)+
+  facet_grid(variable~ cell_subset)+
+  theme_Publication()+
+  ggplot2::theme( axis.text = element_text(size=7))+
+  ylab('total number of clonotypes')+
+  xlab("")+
+  labs(title = "Total number of clonotypes")
+
+#c
+correlation_stats=all_data %>%
+  filter(`Per base sequence quality`=="PASS") %>%
+  reshape2::melt(id=c("sample_id","cell_subset","organ","RNA","RNAQT_used (ng)", "cell_number","cDNA")) %>%
+  filter(grepl(paste(c("clonotype_number_","sequence_number_"), collapse="|"), variable))
+
+correlation_stats$value<- as.numeric(correlation_stats$value) 
+
+
+sp <- ggscatter(correlation_stats %>%  filter(grepl("clonotype_number_", variable)), x = "RNA", y = "value",
+                fill="cell_subset",
+                add = "reg.line",  # Add regressin line
+                add.params = list( color="cell_subset"), # Customize reg. line
+                conf.int = FALSE, # Add confidence interval
+                ylab="# of clonotypes",
+                xlab="[RNA]",
+                facet.by = "variable",
+                palette = "jco",
+                shape=21
+                
+)
+# Add correlation coefficient
+sp + stat_cor(method = "spearman", aes(color=cell_subset))+
+  theme_classic()+theme(plot.margin = unit(c(1,2,1,2) ,"cm"))
+
+#d
+sp <- ggscatter(correlation_stats %>%  filter(grepl("clonotype_number_", variable)), x = "cell_number", y = "value",
+                fill="cell_subset",
+                add = "reg.line",  # Add regressin line
+                add.params = list(color="cell_subset"), # Customize reg. line
+                conf.int = FALSE, # Add confidence interval
+                ylab="# of clonotypes",
+                xlab="cell_number",
+                facet.by = "variable",
+                palette = "jco",
+                shape=21
+                
+)
+# Add correlation coefficient
+sp + stat_cor(method = "spearman", aes(color=cell_subset))+
+  theme_classic()+theme(plot.margin = unit(c(1,2,1,2) ,"cm"))
+
+
+#Figure S2####
 # Create the summary table
 summary <- dt_filtered %>%
-  dplyr::group_by(filename, Mice_ID, chain, cell_subset, Cell_Sample, cell_number) %>%
-  dplyr::mutate(Nbr_clonotypes = n_distinct(clonotypes)) %>%
-  dplyr::mutate(Nbr_sequences = sum(cloneCount)) %>%
-  dplyr::mutate(Nbre_seq_per_cell = Nbr_sequences/cell_number) %>%
-  dplyr::mutate(Nbre_clo_per_sequences = Nbr_clonotypes/Nbr_sequences) %>%
-  dplyr::distinct(filename, cell_subset, chain, Nbr_clonotypes, Nbr_sequences, Nbre_seq_per_cell,Nbre_clo_per_sequences, Cell_Sample, cell_number)
+            dplyr::group_by(filename, Mice_ID, chain, cell_subset, Cell_Sample, cell_number) %>%
+            dplyr::mutate(Nbr_clonotypes = n_distinct(clonotypes)) %>%
+            dplyr::mutate(Nbr_sequences = sum(cloneCount)) %>%
+            dplyr::mutate(Nbre_seq_per_cell = Nbr_sequences/cell_number) %>%
+            dplyr::mutate(Nbre_clo_per_sequences = Nbr_clonotypes/Nbr_sequences) %>%
+            dplyr::distinct(filename, cell_subset, chain, Nbr_clonotypes, Nbr_sequences, Nbre_seq_per_cell,Nbre_clo_per_sequences, Cell_Sample, cell_number)
 
 ##colors
 nejm_color <- c("#e18727",  "#20854e","#bc3c29", "#7876b1", "#0072b5")
 
-#Figure S2####
+
 ##a
 fout <- c("tripod-64-1923_R1.txt","tripod-64-1927_R1.txt","tripod-64-1931_R1.txt",
           "tripod-64-1917_R1.txt","tripod-64-1921_R1.txt","tripod-64-1925_R1.txt",
@@ -276,7 +347,7 @@ for(fb in unique(temp50$freq_bin)) {
 }
 
 
-#Figure 2
+#Figure 2 ####
 ##a
 
 X_CL = dt_filtered
@@ -484,7 +555,7 @@ networks_pgen %>%
   scale_color_manual(values =c(pool = "#20854e", indiv = "#e18727"))+
   theme_Publication() 
 
-#Fi S3
+#Figure S3####
 
 # *********************************************** #
 #### MetaTCR creation ####
@@ -754,7 +825,7 @@ xlab("")+ylab("Shannon")+
 coord_cartesian(ylim=c(7,12))
 
 
-#Fig S4
+#Figure S4####
 ##a
 # dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
 # dt_all<- readRDS("./files/dt_all_nt.rds")
@@ -898,7 +969,7 @@ corr_all2 %>%
          axis.text.x = element_text(size=8, angle=90, hjust=1, vjust=0.5))+
    xlab("")
 
-#Figure 3
+#Figure 3####
 
 ##a
 for(var_chain in c("TRA", "TRB")) {
