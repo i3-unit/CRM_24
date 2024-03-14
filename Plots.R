@@ -3,8 +3,8 @@ CORES = 4
 
 #Figure S1 ####
 
-all_data<- read.table("/Users/vanessamhanna/Nextcloud/Pool_indiv/Cell_Reports_Methods/revision/mukkuri/all_data.csv", 
-           sep = ";", header=T, check.names = F )
+# all_data<- read.table("/Users/vanessamhanna/Nextcloud/Pool_indiv/Cell_Reports_Methods/revision/mukkuri/all_data.csv", 
+#            sep = ";", header=T, check.names = F )
 all_data<- all_data %>% mutate(cell_subset=factor(cell_subset, levels=c("CD8","Teff", "nTregs","amTregs")))
 #a
 ggplot(all_data, aes(x =cell_number, y =RNA))+
@@ -54,6 +54,7 @@ sp <- ggscatter(correlation_stats %>%  filter(grepl("clonotype_number_", variabl
 sp + stat_cor(method = "spearman", aes(color=cell_subset))+
   theme_classic()+theme(plot.margin = unit(c(1,2,1,2) ,"cm"))
 
+
 #d
 sp <- ggscatter(correlation_stats %>%  filter(grepl("clonotype_number_", variable)), x = "cell_number", y = "value",
                 fill="cell_subset",
@@ -70,6 +71,45 @@ sp <- ggscatter(correlation_stats %>%  filter(grepl("clonotype_number_", variabl
 # Add correlation coefficient
 sp + stat_cor(method = "spearman", aes(color=cell_subset))+
   theme_classic()+theme(plot.margin = unit(c(1,2,1,2) ,"cm"))
+
+#e
+indiv_multiple$quantity<- indiv_multiple$Volume*indiv_multiple$R_Quant..ng.µl.
+ggplot(indiv_multiple, aes(x =cell_number, y =quantity))+
+  geom_point(aes(fill=as.factor(poolplus)),shape=21, size=2.5,color="black")+
+  facet_grid(~ cell_subset, scales="free")+
+  smplot2::sm_statCorr(color = 'black', corr_method = 'spearman', linetype = 'dashed',text_size = 3)+
+  theme_Publication()+
+  ggplot2::theme( axis.text = element_text(size=7))+
+  scale_size_area(max_size=4)+
+  scale_fill_brewer(type="seq", palette="YlOrRd")+
+  ylab("Total RNA quantity")
+
+#f
+df_Rarefaction_res<- fortify(Rarefaction_res)
+df_Rarefaction_res <- separate(df_Rarefaction_res, Assemblage, into=c("poolplus", "sample_id", "cell_subset", "chain"), sep="%" )
+
+df.point <- df_Rarefaction_res[which(df_Rarefaction_res$Method=="Observed"),]
+df.line <- df_Rarefaction_res[which(df_Rarefaction_res$Method !="Observed"),]
+
+df_Rarefaction_res$poolplus=factor(df_Rarefaction_res$poolplus, levels=c("1", "2","3","6" ,"7", "8" ,"9" , "10"))
+df_Rarefaction_res$cell_subset=factor(df_Rarefaction_res$cell_subset,levels=c("CD8","Teff","nTregs","amTregs"))
+
+df.point$poolplus=factor(df.point$poolplus, levels=c("1", "2","3","6" ,"7", "8" ,"9" , "10"))
+df.point$cell_subset=factor(df.point$cell_subset,levels=c("CD8","Teff","nTregs","amTregs"))
+
+df.line$poolplus=factor(df.line$poolplus, levels=c("1", "2","3","6" ,"7", "8" ,"9" , "10"))
+df.line$cell_subset=factor(df.line$cell_subset,levels=c("CD8","Teff","nTregs","amTregs"))
+
+ggplot(df_Rarefaction_res, aes(x=x, y=y)) +
+  geom_line(data = df.line %>% filter(Method == "Rarefaction"), aes(x=x, y=y, colour = factor(poolplus), group = sample_id), linetype = "solid", lwd=0.8,  alpha = 0.8) +
+  geom_line(data = df.line %>% filter(Method == "Extrapolation"), aes(x=x, y=y, colour = factor(poolplus), group = sample_id), linetype = "dashed", lwd=0.8, alpha = 0.8) +
+  geom_point(data=df.point, aes(fill = factor(poolplus)), colour = "black", shape = 21, alpha = 0.9) +
+  labs(x="Sample size", y="Number of unique clonotype") +
+  facet_grid(chain~cell_subset, scales = "free")+
+  scale_fill_brewer(type="seq", palette="YlOrRd")+
+  scale_color_brewer(type="seq", palette="YlOrRd")+
+  theme_Publication()+
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))
 
 
 #Figure S2####
@@ -769,8 +809,8 @@ all_t %>%
 
 
 ##b
-# dt_meta<- readRDS("./files/all_metaTCR_aggr_nt.rds")
-# dt_all<- readRDS("./files/dt_all_nt.rds")
+dt_meta<- all_metaTCR_aggr_nt
+dt_all<- dt_all_nt
 
 
 dt_all<- dt_all %>% 
