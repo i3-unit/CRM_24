@@ -3,8 +3,6 @@ CORES = 4
 
 #Figure S1 ####
 
-# all_data<- read.table("/Users/vanessamhanna/Nextcloud/Pool_indiv/Cell_Reports_Methods/revision/mukkuri/all_data.csv", 
-#            sep = ";", header=T, check.names = F )
 all_data<- all_data %>% mutate(cell_subset=factor(cell_subset, levels=c("CD8","Teff", "nTregs","amTregs")))
 #a
 ggplot(all_data, aes(x =cell_number, y =RNA))+
@@ -280,7 +278,6 @@ mod = rbindlist(lapply(mod, setDT, keep.rownames = TRUE))
 
 setnames(mod, old = "rn", new = "group2")
 
-# metadata <- fread("/Users/vanessamhanna/Nextcloud/Pool_indiv/metadata_comp_pool.txt", header = T)
 summary_temp$cell_subset<- gsub("Teff", replacement = "CD4+",summary_temp$cell_subset)
 summary_temp$group2 = paste(summary_temp$Cell_Sample, summary_temp$Mice_ID, summary_temp$cell_subset, summary_temp$chain, "B6_Yg", sep = "%")
 summary_temp<- summary_temp %>% select(-variable, -value) %>% distinct()
@@ -565,7 +562,7 @@ cdr3aa_beta= as.data.frame(unique(X_CL_Q1$cdr3aa[X_CL_Q1$chain=="TRB"]))
 
 cdr3aa_alpha= as.data.frame(unique(X_CL_Q1$cdr3aa[X_CL_Q1$chain=="TRA"]))
 
-# run olga-compute_pgen --mouseTRB -i /mnt/mukkuri/RepSeq/RS_Analysis/VMH/pool_indiv/review/unique_cdr3aa_beta.tsv -o /mnt/mukkuri/RepSeq/RS_Analysis/VMH/pool_indiv/review/pgen_unique_cdr3aa_beta.tsv
+# run olga-compute_pgen --mouseTRB -i
 
 # file_list <- list.files(path = "./files/", pattern = "pgen", include.dirs = T)
 pgen_filename = file_list
